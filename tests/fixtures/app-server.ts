@@ -63,6 +63,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         send({ id, error: { code: -1, message: "model unavailable" } });
         break;
       }
+      if (params.serviceTier === "missing") {
+        send({ id, error: { code: -1, message: "service tier unavailable" } });
+        break;
+      }
       if (
         params.approvalPolicy !== "never" ||
         params.sandbox !== "danger-full-access" ||

@@ -18,8 +18,13 @@ const definitions = {
   },
   codex_start: {
     description:
-      "Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model is optional.",
-    schema: z.object({ prompt: text, cwd: id, model: id.optional() }),
+      'Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model and serviceTier (for example "fast") are optional.',
+    schema: z.object({
+      prompt: text,
+      cwd: id,
+      model: id.optional(),
+      serviceTier: id.optional(),
+    }),
   },
   codex_message: {
     description:

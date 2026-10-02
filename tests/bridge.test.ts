@@ -190,6 +190,9 @@ test("model errors, invalid directories, unknown threads, and rejected turns rem
   await expect(
     bridge.start({ cwd, prompt: "work", model: "missing" }),
   ).rejects.toThrow("model unavailable");
+  await expect(
+    bridge.start({ cwd, prompt: "work", serviceTier: "missing" }),
+  ).rejects.toThrow("service tier unavailable");
   expect(() => bridge.status("missing")).toThrow("Unknown thread");
   await expect(bridge.start({ cwd, prompt: "fail" })).rejects.toThrow(
     "turn rejected",

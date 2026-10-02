@@ -77,7 +77,12 @@ export class Bridge {
     return this.rpc.call("model/list", { cursor, limit: 100 });
   }
 
-  async start(input: { prompt: string; cwd: string; model?: string }) {
+  async start(input: {
+    prompt: string;
+    cwd: string;
+    model?: string;
+    serviceTier?: string;
+  }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
@@ -85,6 +90,7 @@ export class Bridge {
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
       model: input.model,
+      serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
