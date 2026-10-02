@@ -3,6 +3,7 @@ import type { Readable, Writable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AppServer } from "./app-server.ts";
 import { createServer } from "./server.ts";
+import { wait } from "./wait.ts";
 
 export async function main(
   input: Readable = process.stdin,
@@ -31,4 +32,8 @@ export async function main(
   return { bridge, shutdown };
 }
 
-if (import.meta.main) await main();
+if (import.meta.main) {
+  if (process.argv[2] === "wait")
+    process.exit(await wait(process.argv.slice(3)));
+  await main();
+}

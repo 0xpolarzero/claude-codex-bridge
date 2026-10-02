@@ -2,8 +2,10 @@ import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { ServerNotification } from "../.generated/ServerNotification.ts";
 import type { ServerRequest } from "../.generated/ServerRequest.ts";
+import type { ThreadResumeResponse } from "../.generated/v2/ThreadResumeResponse.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
 import type { AppServer } from "./app-server.ts";
+import { processAlive, type ThreadStore } from "./store.ts";
 
 export type BridgeEvent = {
   sequence: number;
@@ -56,6 +58,7 @@ export class Bridge {
     private publish: (event: BridgeEvent) => Promise<void>,
     private progressMs = 1_000,
     private journalLimit = 200,
+    private store: ThreadStore | null = null,
   ) {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
@@ -67,6 +70,7 @@ export class Bridge {
         session.status = "unavailable";
         session.turnId = null;
         session.questions = [];
+        this.persist(session);
         this.emit(session.threadId, "unavailable", error.message);
       }
     };
@@ -100,12 +104,26 @@ export class Bridge {
     if (this.sessions.has(threadId))
       return this.snapshot(this.session(threadId));
     await this.rpc.connect();
-    const result = await this.rpc.call("thread/resume", {
-      threadId,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      initialTurnsPage: { limit: 1, sortDirection: "desc", itemsView: "full" },
-    });
+    let result: ThreadResumeResponse;
+    try {
+      result = await this.rpc.call("thread/resume", {
+        threadId,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        initialTurnsPage: {
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "full",
+        },
+      });
+    } catch (error) {
+      const owner = this.store?.read(threadId)?.ownerPid;
+      if (owner && owner !== process.pid && processAlive(owner))
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; the thread belongs to another live bridge (pid ${owner}, usually an earlier Claude session). Read its saved result with codex_status, or wait for it with the waitCommand.`,
+        );
+      throw error;
+    }
     const session = this.attach(result.thread.id, result.model, result.cwd);
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
@@ -116,11 +134,12 @@ export class Bridge {
     for (const item of turn?.items ?? []) {
       if (item.type === "agentMessage") this.answerText(session, item.text);
     }
+    this.persist(session);
     return this.snapshot(session);
   }
 
   async message(threadId: string, message: string) {
-    const session = this.session(threadId);
+    const session = await this.attached(threadId);
     return this.lock(session, async () => {
       if (session.turnId) {
         await this.rpc.call("turn/steer", {
@@ -136,7 +155,7 @@ export class Bridge {
   }
 
   async stop(threadId: string) {
-    const session = this.session(threadId);
+    const session = await this.attached(threadId);
     return this.lock(session, async () => {
       if (!session.turnId)
         return { requested: false, ...this.snapshot(session) };
@@ -175,10 +194,29 @@ export class Bridge {
   }
 
   status(threadId?: string) {
+    const live = [...this.sessions.values()].map((session) =>
+      this.snapshot(session),
+    );
+    const saved = (this.store?.list() ?? [])
+      .filter((record) => !this.sessions.has(record.threadId))
+      .map((record) => ({
+        ...record,
+        status: record.status as Session["status"],
+        turnId: null,
+        questions: [],
+        attached: false,
+        ownerAlive: processAlive(record.ownerPid),
+      }));
+    let sessions: (Session & { attached: boolean })[] = [...live, ...saved];
+    if (threadId) {
+      sessions = sessions.filter((session) => session.threadId === threadId);
+      if (!sessions.length)
+        throw new Error(
+          "Unknown thread; use codex_resume to attach a saved Codex thread",
+        );
+    }
     return {
-      sessions: threadId
-        ? [this.snapshot(this.session(threadId))]
-        : [...this.sessions.values()].map((session) => this.snapshot(session)),
+      sessions,
       failure: this.failure,
       channelError: this.channelError,
       latestSequence: this.sequence,
@@ -207,7 +245,26 @@ export class Bridge {
       questions: [],
     };
     this.sessions.set(threadId, session);
+    this.persist(session);
     return session;
+  }
+
+  /** The attached session, reattaching a saved thread after a restart. */
+  private async attached(threadId: string) {
+    if (!this.sessions.has(threadId)) await this.resume(threadId);
+    return this.session(threadId);
+  }
+
+  private persist(session: Session) {
+    this.store?.write({
+      threadId: session.threadId,
+      cwd: session.cwd,
+      model: session.model,
+      status: session.status,
+      lastTurnId: session.lastTurnId,
+      lastAnswer: session.lastAnswer,
+      answerTruncated: session.answerTruncated,
+    });
   }
 
   private session(threadId: string) {
@@ -220,7 +277,7 @@ export class Bridge {
   }
 
   private snapshot(session: Session) {
-    return { ...session, questions: [...session.questions] };
+    return { ...session, questions: [...session.questions], attached: true };
   }
 
   private async lock<T>(session: Session, action: () => Promise<T>) {
@@ -252,8 +309,10 @@ export class Bridge {
         session.status =
           result.turn.status === "inProgress" ? "running" : result.turn.status;
       }
+      this.persist(session);
     } catch (error) {
       if (session.status !== "unavailable") session.status = "failed";
+      this.persist(session);
       this.emit(session.threadId, "error", String(error));
       throw error;
     }
@@ -269,6 +328,7 @@ export class Bridge {
         session.lastTurnId = event.params.turn.id;
         session.turnId = event.params.turn.id;
         session.status = "running";
+        this.persist(session);
         this.emit(
           session.threadId,
           "started",
@@ -313,6 +373,7 @@ export class Bridge {
         session.turnId = null;
         for (const question of [...session.questions])
           this.clearRequest(question.requestId);
+        this.persist(session);
         this.emit(
           session.threadId,
           session.status,
