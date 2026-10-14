@@ -1,17 +1,36 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const mode = process.argv[2];
+const mode = process.argv[2] === "-" ? undefined : process.argv[2];
+const stateFile = process.argv[3];
 if (mode === "stubborn") process.on("SIGTERM", () => {});
-const threads = new Map<
-  string,
-  {
-    model: string;
-    cwd: string;
-    turnId: string;
-    prompt: string;
-    effort?: string;
-  }
->();
+type FixtureThread = {
+  model: string;
+  cwd: string;
+  turnId: string;
+  prompt: string;
+  effort: string | null;
+  serviceTier: string | null;
+};
+type FixtureState = {
+  threads: Record<string, FixtureThread>;
+  calls: { method: string; params: Record<string, unknown> }[];
+};
+let previous: FixtureState = { threads: {}, calls: [] };
+if (stateFile) {
+  try {
+    previous = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {}
+}
+const threads = new Map(Object.entries(previous.threads));
+const calls = previous.calls;
+function persistState() {
+  if (stateFile)
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ threads: Object.fromEntries(threads), calls }),
+    );
+}
 let sequence = 0;
 const send = (message: object) =>
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -32,10 +51,15 @@ const finish = (threadId: string, status = "completed", text = "finished") => {
   });
   notify("turn/completed", { threadId, turn: turn(thread.turnId, status) });
   thread.turnId = "";
+  persistState();
 };
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, method, params, result, error } = JSON.parse(line);
+  if (method !== undefined) {
+    calls.push({ method, params });
+    persistState();
+  }
   if (method === undefined) {
     const threadId = String(id).split(":")[0];
     notify("serverRequest/resolved", { threadId, requestId: id });
@@ -85,44 +109,53 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         cwd: params.cwd,
         turnId: "",
         prompt: "",
+        effort: null,
+        serviceTier: params.serviceTier ?? null,
       };
       threads.set(threadId, thread);
+      persistState();
       notify("thread/started", { thread: { id: threadId } });
       reply({
         thread: { id: threadId },
         ...thread,
-        serviceTier: params.serviceTier ?? null,
-        reasoningEffort: "medium",
+        reasoningEffort: thread.effort,
       });
       break;
     }
     case "thread/resume": {
       if (params.initialTurnsPage?.itemsView !== "full")
         throw new Error("Resume needs full recent items");
-      const thread = {
+      const persisted = threads.has(params.threadId);
+      const thread = threads.get(params.threadId) ?? {
         model: "fixture",
         cwd: process.cwd(),
         turnId: params.threadId === "active" ? "resumed-turn" : "",
         prompt: "",
-        effort: "high",
+        effort: null,
+        serviceTier: null,
       };
+      const resumedStatus = thread.turnId
+        ? persisted
+          ? "interrupted"
+          : "inProgress"
+        : "completed";
+      if (params.serviceTier !== undefined)
+        thread.serviceTier = params.serviceTier;
       threads.set(params.threadId, thread);
-      reply({
+      persistState();
+      const response = {
         thread: {
           id: params.threadId,
           turns: [
             {
-              ...turn(
-                thread.turnId,
-                thread.turnId ? "inProgress" : "completed",
-              ),
+              ...turn(thread.turnId, resumedStatus),
               items: [{ type: "agentMessage", text: "saved answer" }],
             },
           ],
         },
         ...thread,
-        serviceTier: null,
-        reasoningEffort: null,
+        serviceTier: thread.serviceTier,
+        reasoningEffort: thread.effort,
         initialTurnsPage:
           params.threadId === "paged"
             ? {
@@ -134,7 +167,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 ],
               }
             : null,
-      });
+      };
+      if (mode === "slow-resume") setTimeout(() => reply(response), 80);
+      else reply(response);
       break;
     }
     case "turn/start": {
@@ -161,8 +196,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       thread.prompt = prompt;
       thread.effort = params.effort ?? thread.effort;
+      thread.serviceTier = params.serviceTier ?? thread.serviceTier;
       thread.turnId = `turn-${++sequence}`;
+      persistState();
       const initialTurn = turn(thread.turnId);
+      if (prompt === "pending") {
+        setTimeout(() => reply({ turn: initialTurn }), 100);
+        break;
+      }
       if (prompt === "late") {
         reply({ turn: initialTurn });
         setTimeout(

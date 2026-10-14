@@ -65,6 +65,18 @@ const definitions = {
   },
 };
 
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function buildWaitCommand(
+  serverPath: string,
+  home: string,
+  threadId: string,
+) {
+  return `node ${shellQuote(serverPath)} wait --home ${shellQuote(home)} ${shellQuote(threadId)}`;
+}
+
 export function createServer(rpc = new AppServer(), progressMs = 1_000) {
   const server = new Server(
     { name: manifest.name, version: manifest.version },
@@ -76,7 +88,7 @@ export function createServer(rpc = new AppServer(), progressMs = 1_000) {
   );
   const store = new ThreadStore();
   const waitCommand = (threadId: string) =>
-    `node ${JSON.stringify(fileURLToPath(import.meta.url))} wait --home ${JSON.stringify(store.home)} ${threadId}`;
+    buildWaitCommand(fileURLToPath(import.meta.url), store.home, threadId);
   const bridge = new Bridge(
     rpc,
     (event) =>

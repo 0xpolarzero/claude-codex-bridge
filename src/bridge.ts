@@ -22,6 +22,7 @@ type Session = {
   cwd: string;
   serviceTier: string | null;
   effort: string | null;
+  error: string | null;
   status:
     | "idle"
     | "running"
@@ -44,6 +45,7 @@ export class Bridge {
     ServerRequest & { method: "item/tool/requestUserInput" }
   >();
   private busy = new Set<string>();
+  private reattachments = new Map<string, Promise<Session>>();
   private journal: BridgeEvent[] = [];
   private sequence = 0;
   private buffers = new Map<
@@ -70,6 +72,7 @@ export class Bridge {
       for (const session of this.sessions.values()) {
         this.flush(session.threadId);
         session.status = "unavailable";
+        session.error = error.message;
         session.turnId = null;
         session.questions = [];
         this.persist(session);
@@ -106,10 +109,10 @@ export class Bridge {
       result.thread.id,
       result.model,
       result.cwd,
-      result.serviceTier,
+      result.serviceTier ?? input.serviceTier ?? null,
       result.reasoningEffort,
     );
-    return this.lock(session, async () => {
+    return this.control(session.threadId, async (session) => {
       await this.begin(session, input.prompt, input.effort);
       return this.snapshot(session);
     });
@@ -118,11 +121,28 @@ export class Bridge {
   async resume(threadId: string) {
     if (this.sessions.has(threadId))
       return this.snapshot(this.session(threadId));
+    let reattachment = this.reattachments.get(threadId);
+    if (!reattachment) {
+      reattachment = this.resumeThread(threadId);
+      this.reattachments.set(threadId, reattachment);
+    }
+    try {
+      return this.snapshot(await reattachment);
+    } finally {
+      if (this.reattachments.get(threadId) === reattachment)
+        this.reattachments.delete(threadId);
+    }
+  }
+
+  private async resumeThread(threadId: string) {
+    if (this.sessions.has(threadId)) return this.session(threadId);
+    const saved = this.store?.read(threadId);
     await this.rpc.connect();
     let result: ThreadResumeResponse;
     try {
       result = await this.rpc.call("thread/resume", {
         threadId,
+        serviceTier: saved?.serviceTier,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         initialTurnsPage: {
@@ -139,7 +159,6 @@ export class Bridge {
         );
       throw error;
     }
-    const saved = this.store?.read(threadId);
     const session = this.attach(
       result.thread.id,
       result.model,
@@ -147,6 +166,7 @@ export class Bridge {
       result.serviceTier ?? saved?.serviceTier ?? null,
       result.reasoningEffort ?? saved?.effort ?? null,
     );
+    session.error = saved?.error ?? null;
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
@@ -157,12 +177,11 @@ export class Bridge {
       if (item.type === "agentMessage") this.answerText(session, item.text);
     }
     this.persist(session);
-    return this.snapshot(session);
+    return session;
   }
 
   async message(threadId: string, message: string, effort?: string) {
-    const session = await this.attached(threadId);
-    return this.lock(session, async () => {
+    return this.control(threadId, async (session) => {
       if (session.turnId) {
         if (effort !== undefined)
           throw new Error(
@@ -181,8 +200,7 @@ export class Bridge {
   }
 
   async stop(threadId: string) {
-    const session = await this.attached(threadId);
-    return this.lock(session, async () => {
+    return this.control(threadId, async (session) => {
       if (!session.turnId)
         return { requested: false, ...this.snapshot(session) };
       await this.rpc.call("turn/interrupt", {
@@ -229,6 +247,7 @@ export class Bridge {
         ...record,
         serviceTier: record.serviceTier ?? null,
         effort: record.effort ?? null,
+        error: record.error ?? null,
         status: record.status as Session["status"],
         turnId: null,
         questions: [],
@@ -273,6 +292,7 @@ export class Bridge {
       cwd,
       serviceTier,
       effort,
+      error: null,
       status: "idle",
       turnId: null,
       lastTurnId: null,
@@ -298,6 +318,7 @@ export class Bridge {
       model: session.model,
       serviceTier: session.serviceTier,
       effort: session.effort,
+      error: session.error,
       status: session.status,
       lastTurnId: session.lastTurnId,
       lastAnswer: session.lastAnswer,
@@ -318,30 +339,37 @@ export class Bridge {
     return { ...session, questions: [...session.questions], attached: true };
   }
 
-  private async lock<T>(session: Session, action: () => Promise<T>) {
-    if (this.busy.has(session.threadId))
+  private async control<T>(
+    threadId: string,
+    action: (session: Session) => Promise<T>,
+  ) {
+    if (this.busy.has(threadId))
       throw new Error("A control request for this thread is already in flight");
-    if (session.status === "unavailable")
-      throw new Error(this.failure ?? "Codex unavailable");
-    this.busy.add(session.threadId);
+    this.busy.add(threadId);
     try {
-      return await action();
+      const session = await this.attached(threadId);
+      if (session.status === "unavailable")
+        throw new Error(session.error ?? this.failure ?? "Codex unavailable");
+      return await action(session);
     } finally {
-      this.busy.delete(session.threadId);
+      this.busy.delete(threadId);
     }
   }
 
   private async begin(session: Session, text: string, effort?: string) {
     session.lastAnswer = "";
     session.answerTruncated = false;
+    session.error = null;
+    const effectiveEffort = effort ?? session.effort ?? undefined;
     try {
       // turn/started may arrive before this response; notifications own the live state.
       const result = await this.rpc.call("turn/start", {
         threadId: session.threadId,
         input: [{ type: "text", text, text_elements: [] }],
-        effort,
+        effort: effectiveEffort,
+        serviceTier: session.serviceTier ?? undefined,
       });
-      if (effort !== undefined) session.effort = effort;
+      if (effectiveEffort !== undefined) session.effort = effectiveEffort;
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;
         session.turnId =
@@ -351,9 +379,12 @@ export class Bridge {
       }
       this.persist(session);
     } catch (error) {
-      if (session.status !== "unavailable") session.status = "failed";
-      this.persist(session);
-      this.emit(session.threadId, "error", String(error));
+      if (!this.closed) {
+        if (session.status !== "unavailable") session.status = "failed";
+        session.error = error instanceof Error ? error.message : String(error);
+        this.persist(session);
+        this.emit(session.threadId, "error", session.error);
+      }
       throw error;
     }
   }
@@ -368,6 +399,7 @@ export class Bridge {
         session.lastTurnId = event.params.turn.id;
         session.turnId = event.params.turn.id;
         session.status = "running";
+        session.error = null;
         this.persist(session);
         this.emit(
           session.threadId,
@@ -410,6 +442,7 @@ export class Bridge {
           event.params.turn.status === "inProgress"
             ? "running"
             : event.params.turn.status;
+        session.error = event.params.turn.error?.message ?? null;
         session.turnId = null;
         for (const question of [...session.questions])
           this.clearRequest(question.requestId);
@@ -425,6 +458,8 @@ export class Bridge {
         this.clearRequest(String(event.params.requestId));
         break;
       case "error":
+        session.error = event.params.error.message;
+        this.persist(session);
         this.emit(session.threadId, "error", event.params.error.message);
         break;
     }
@@ -522,6 +557,21 @@ export class Bridge {
 
   async close() {
     this.closed = true;
+    this.requests.clear();
+    for (const session of this.sessions.values()) {
+      if (
+        !this.busy.has(session.threadId) &&
+        session.status !== "running" &&
+        session.status !== "waiting_input"
+      )
+        continue;
+      session.status = "interrupted";
+      session.error = "Bridge closed while the Codex turn was active";
+      session.turnId = null;
+      session.questions = [];
+      this.persist(session);
+      this.emit(session.threadId, "interrupted", session.error);
+    }
     for (const threadId of this.buffers.keys()) this.flush(threadId);
     await this.rpc.close();
     await this.delivery;

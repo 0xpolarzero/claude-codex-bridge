@@ -15,6 +15,7 @@ export type ThreadRecord = {
   serviceTier?: string | null;
   effort?: string | null;
   status: string;
+  error?: string | null;
   lastTurnId: string | null;
   lastAnswer: string;
   answerTruncated: boolean;
@@ -51,10 +52,13 @@ export class ThreadStore {
     return join(this.dir, `${threadId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
   }
 
-  write(record: Omit<ThreadRecord, "ownerPid" | "updatedAt">) {
+  write(
+    record: Omit<ThreadRecord, "ownerPid" | "updatedAt">,
+    ownerPid = process.pid,
+  ) {
     const full: ThreadRecord = {
       ...record,
-      ownerPid: process.pid,
+      ownerPid,
       updatedAt: new Date().toISOString(),
     };
     const target = this.path(record.threadId);
