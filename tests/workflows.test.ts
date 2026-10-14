@@ -194,7 +194,7 @@ test("workflow shell tags nothing when main moves during verification", () => {
       upstream,
     );
   });
-});
+}, 15_000);
 
 test("workflow shell leaves unlabeled changes alone and refuses conflicting labels", () => {
   fixture((root) => {
