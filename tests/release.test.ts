@@ -157,6 +157,14 @@ test("checkout validation accepts only the checkout launcher and preserves versi
   });
 });
 
+test("the pinned Codex CLI matches the documented app-server baseline", () => {
+  const mise = readFileSync(resolve(project, "mise.toml"), "utf8");
+  const version = mise.match(/^codex = "([^"]+)"$/m)?.[1];
+  const readme = readFileSync(resolve(project, "README.md"), "utf8");
+  expect(version).toBe("0.160.0");
+  expect(readme).toContain(`Codex CLI ${version}`);
+});
+
 for (const mutation of [
   [
     3,
