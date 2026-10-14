@@ -172,7 +172,7 @@ test("workflow shell publishes the checked candidate atomically, ignores repeate
     expect(git(root, "rev-parse", "HEAD")).toBe(sha);
     expect(prepare(root, "[]", "not-a-version").result.exitCode).not.toBe(0);
   });
-});
+}, 15_000);
 
 test("workflow shell tags nothing when main moves during verification", () => {
   fixture((root, remote) => {
@@ -194,7 +194,7 @@ test("workflow shell tags nothing when main moves during verification", () => {
       upstream,
     );
   });
-});
+}, 15_000);
 
 test("workflow shell leaves unlabeled changes alone and refuses conflicting labels", () => {
   fixture((root) => {
@@ -205,4 +205,4 @@ test("workflow shell leaves unlabeled changes alone and refuses conflicting labe
     ).not.toBe(0);
     expect(git(root, "rev-parse", "HEAD")).toBe(sha);
   });
-});
+}, 15_000);

@@ -4,7 +4,13 @@ const mode = process.argv[2];
 if (mode === "stubborn") process.on("SIGTERM", () => {});
 const threads = new Map<
   string,
-  { model: string; cwd: string; turnId: string; prompt: string }
+  {
+    model: string;
+    cwd: string;
+    turnId: string;
+    prompt: string;
+    effort?: string;
+  }
 >();
 let sequence = 0;
 const send = (message: object) =>
@@ -82,7 +88,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       };
       threads.set(threadId, thread);
       notify("thread/started", { thread: { id: threadId } });
-      reply({ thread: { id: threadId }, ...thread });
+      reply({
+        thread: { id: threadId },
+        ...thread,
+        serviceTier: params.serviceTier ?? null,
+        reasoningEffort: "medium",
+      });
       break;
     }
     case "thread/resume": {
@@ -93,6 +104,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         cwd: process.cwd(),
         turnId: params.threadId === "active" ? "resumed-turn" : "",
         prompt: "",
+        effort: "high",
       };
       threads.set(params.threadId, thread);
       reply({
@@ -109,6 +121,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           ],
         },
         ...thread,
+        serviceTier: null,
+        reasoningEffort: null,
         initialTurnsPage:
           params.threadId === "paged"
             ? {
@@ -134,11 +148,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (prompt === "crash") {
         process.exit(7);
       }
+      if (params.effort === "missing") {
+        send({
+          id,
+          error: { code: -1, message: "reasoning effort unavailable" },
+        });
+        break;
+      }
       if (prompt === "malformed") {
         process.stdout.write("bad\n");
         break;
       }
       thread.prompt = prompt;
+      thread.effort = params.effort ?? thread.effort;
       thread.turnId = `turn-${++sequence}`;
       const initialTurn = turn(thread.turnId);
       if (prompt === "late") {
@@ -161,6 +183,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         item: { type: "userMessage" },
       });
       if (prompt === "instant") finish(params.threadId);
+      if (prompt === "effort")
+        finish(
+          params.threadId,
+          "completed",
+          `effort=${thread.effort ?? "default"}`,
+        );
       if (prompt === "failed") {
         notify("error", {
           threadId: params.threadId,

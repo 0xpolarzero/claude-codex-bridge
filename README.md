@@ -153,6 +153,15 @@ Claude can list available models with `codex_models`. An explicitly selected
 model is requested without provider fallback. Ask for a service tier such as
 `fast` to override the `service_tier` in your Codex config for that thread.
 
+Pass `effort` to `codex_start` to choose the first turn's reasoning effort, or
+to `codex_message` when the thread is idle to choose the next turn's effort.
+The bridge sends it as `effort` on `turn/start`; the app-server protocol does
+not accept it on `thread/start` or `turn/steer`. This matches `TurnStartParams`
+from Codex CLI 0.160.0's `codex app-server generate-ts` output; the generated
+`ThreadStartParams` and `TurnSteerParams` have no `effort` field. The requested
+effort applies to that turn and subsequent turns. An invalid value is reported
+by Codex. An active turn cannot change effort after it starts.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |
