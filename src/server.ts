@@ -20,8 +20,14 @@ const definitions = {
   },
   codex_start: {
     description:
-      "Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model is optional. The result includes waitCommand: run it in a background shell to be notified when the turn ends.",
-    schema: z.object({ prompt: text, cwd: id, model: id.optional() }),
+      'Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model, serviceTier (for example "fast"), and reasoning effort (for example "high") are optional. The result includes waitCommand: run it in a background shell to be notified when the turn ends.',
+    schema: z.object({
+      prompt: text,
+      cwd: id,
+      model: id.optional(),
+      serviceTier: id.optional(),
+      effort: id.optional(),
+    }),
   },
   codex_message: {
     description:

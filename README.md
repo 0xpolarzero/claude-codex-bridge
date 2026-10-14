@@ -150,7 +150,8 @@ Keep the `threadId` if you want to continue after restarting Claude:
 > continue the investigation.
 
 Claude can list available models with `codex_models`. An explicitly selected
-model is requested without provider fallback.
+model is requested without provider fallback. Ask for a service tier such as
+`fast` to override the `service_tier` in your Codex config for that thread.
 
 ## Available tools
 
