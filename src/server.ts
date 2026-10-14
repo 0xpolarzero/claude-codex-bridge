@@ -20,13 +20,19 @@ const definitions = {
   },
   codex_start: {
     description:
-      "Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model is optional. The result includes waitCommand: run it in a background shell to be notified when the turn ends.",
-    schema: z.object({ prompt: text, cwd: id, model: id.optional() }),
+      'Start a live Codex agent and return its threadId immediately after acceptance. Codex runs with full filesystem/network access and no approval prompts. Supply an absolute working directory and the complete task context; model, serviceTier (for example "fast"), and reasoning effort (for example "high") are optional. The result includes waitCommand: run it in a background shell to be notified when the turn ends.',
+    schema: z.object({
+      prompt: text,
+      cwd: id,
+      model: id.optional(),
+      serviceTier: id.optional(),
+      effort: id.optional(),
+    }),
   },
   codex_message: {
     description:
-      "Send direction to a running Codex turn, or start another turn in the same thread if it is idle. Saved threads from an earlier session are reattached automatically. A race with turn completion can return an error: inspect status before retrying. The result includes waitCommand.",
-    schema: z.object({ threadId: id, message: text }),
+      'Send direction to a running Codex turn, or start another turn in the same thread if it is idle. Saved threads from an earlier session are reattached automatically. Set reasoning effort (for example "high") when starting a new turn. The active turn cannot change effort after it starts. A race with turn completion can return an error: inspect status before retrying. The result includes waitCommand.',
+    schema: z.object({ threadId: id, message: text, effort: id.optional() }),
   },
   codex_stop: {
     description:
@@ -120,7 +126,11 @@ export function createServer(rpc = new AppServer(), progressMs = 1_000) {
         case "codex_message": {
           const input = definitions.codex_message.schema.parse(args);
           result = {
-            ...(await bridge.message(input.threadId, input.message)),
+            ...(await bridge.message(
+              input.threadId,
+              input.message,
+              input.effort,
+            )),
             waitCommand: waitCommand(input.threadId),
           };
           break;

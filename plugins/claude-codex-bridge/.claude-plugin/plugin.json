@@ -1,6 +1,6 @@
 {
   "name": "claude-codex-bridge",
-  "version": "0.1.4-local.1",
+  "version": "0.1.4-local.2",
   "description": "Run live Codex agents from Claude with MCP controls and channel events.",
   "author": {
     "name": "umum-ai"

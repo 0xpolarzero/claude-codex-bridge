@@ -128,3 +128,22 @@ test("MCP question answer reaches Codex and tool errors use isError", async () =
     ).isError,
   ).toBe(true);
 });
+
+test("MCP effort overrides reach app-server turns", async () => {
+  const { call } = await connect();
+  const started = await call("codex_start", {
+    cwd: process.cwd(),
+    prompt: "effort",
+    effort: "high",
+  });
+  expect(started.effort).toBe("high");
+  expect(started.lastAnswer).toBe("effort=high");
+
+  const next = await call("codex_message", {
+    threadId: started.threadId,
+    message: "effort",
+    effort: "xhigh",
+  });
+  expect(next.effort).toBe("xhigh");
+  expect(next.lastAnswer).toBe("effort=xhigh");
+});

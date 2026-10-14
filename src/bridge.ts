@@ -20,6 +20,8 @@ type Session = {
   threadId: string;
   model: string;
   cwd: string;
+  serviceTier: string | null;
+  effort: string | null;
   status:
     | "idle"
     | "running"
@@ -81,7 +83,13 @@ export class Bridge {
     return this.rpc.call("model/list", { cursor, limit: 100 });
   }
 
-  async start(input: { prompt: string; cwd: string; model?: string }) {
+  async start(input: {
+    prompt: string;
+    cwd: string;
+    model?: string;
+    serviceTier?: string;
+    effort?: string;
+  }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
@@ -89,13 +97,20 @@ export class Bridge {
     const result = await this.rpc.call("thread/start", {
       cwd: input.cwd,
       model: input.model,
+      serviceTier: input.serviceTier,
       allowProviderModelFallback: false,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
     });
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      result.serviceTier,
+      result.reasoningEffort,
+    );
     return this.lock(session, async () => {
-      await this.begin(session, input.prompt);
+      await this.begin(session, input.prompt, input.effort);
       return this.snapshot(session);
     });
   }
@@ -124,7 +139,14 @@ export class Bridge {
         );
       throw error;
     }
-    const session = this.attach(result.thread.id, result.model, result.cwd);
+    const saved = this.store?.read(threadId);
+    const session = this.attach(
+      result.thread.id,
+      result.model,
+      result.cwd,
+      result.serviceTier ?? saved?.serviceTier ?? null,
+      result.reasoningEffort ?? saved?.effort ?? null,
+    );
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
@@ -138,10 +160,14 @@ export class Bridge {
     return this.snapshot(session);
   }
 
-  async message(threadId: string, message: string) {
+  async message(threadId: string, message: string, effort?: string) {
     const session = await this.attached(threadId);
     return this.lock(session, async () => {
       if (session.turnId) {
+        if (effort !== undefined)
+          throw new Error(
+            "effort can only be set when starting a new turn; turn/steer cannot change the active turn's effort",
+          );
         await this.rpc.call("turn/steer", {
           threadId,
           expectedTurnId: session.turnId,
@@ -149,7 +175,7 @@ export class Bridge {
         });
         return { mode: "steered", ...this.snapshot(session) };
       }
-      await this.begin(session, message);
+      await this.begin(session, message, effort);
       return { mode: "new_turn", ...this.snapshot(session) };
     });
   }
@@ -201,6 +227,8 @@ export class Bridge {
       .filter((record) => !this.sessions.has(record.threadId))
       .map((record) => ({
         ...record,
+        serviceTier: record.serviceTier ?? null,
+        effort: record.effort ?? null,
         status: record.status as Session["status"],
         turnId: null,
         questions: [],
@@ -232,11 +260,19 @@ export class Bridge {
     };
   }
 
-  private attach(threadId: string, model: string, cwd: string) {
+  private attach(
+    threadId: string,
+    model: string,
+    cwd: string,
+    serviceTier: string | null = null,
+    effort: string | null = null,
+  ) {
     const session: Session = {
       threadId,
       model,
       cwd,
+      serviceTier,
+      effort,
       status: "idle",
       turnId: null,
       lastTurnId: null,
@@ -260,6 +296,8 @@ export class Bridge {
       threadId: session.threadId,
       cwd: session.cwd,
       model: session.model,
+      serviceTier: session.serviceTier,
+      effort: session.effort,
       status: session.status,
       lastTurnId: session.lastTurnId,
       lastAnswer: session.lastAnswer,
@@ -293,7 +331,7 @@ export class Bridge {
     }
   }
 
-  private async begin(session: Session, text: string) {
+  private async begin(session: Session, text: string, effort?: string) {
     session.lastAnswer = "";
     session.answerTruncated = false;
     try {
@@ -301,7 +339,9 @@ export class Bridge {
       const result = await this.rpc.call("turn/start", {
         threadId: session.threadId,
         input: [{ type: "text", text, text_elements: [] }],
+        effort,
       });
+      if (effort !== undefined) session.effort = effort;
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;
         session.turnId =

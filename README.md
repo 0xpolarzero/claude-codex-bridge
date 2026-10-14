@@ -30,7 +30,7 @@ sequenceDiagram
 ## Requirements
 
 - **Claude Code 2.1.261**, installed and signed in.
-- **Codex CLI 0.153.4**, installed and signed in with access to the model you
+- **Codex CLI 0.160.0**, installed and signed in with access to the model you
   want to use.
 - **Node.js 24.20.0 or newer**, including npm and npx.
 
@@ -150,7 +150,17 @@ Keep the `threadId` if you want to continue after restarting Claude:
 > continue the investigation.
 
 Claude can list available models with `codex_models`. An explicitly selected
-model is requested without provider fallback.
+model is requested without provider fallback. Ask for a service tier such as
+`fast` to override the `service_tier` in your Codex config for that thread.
+
+Pass `effort` to `codex_start` to choose the first turn's reasoning effort, or
+to `codex_message` when the thread is idle to choose the next turn's effort.
+The bridge sends it as `effort` on `turn/start`; the app-server protocol does
+not accept it on `thread/start` or `turn/steer`. This matches `TurnStartParams`
+from Codex CLI 0.160.0's `codex app-server generate-ts` output; the generated
+`ThreadStartParams` and `TurnSteerParams` have no `effort` field. The requested
+effort applies to that turn and subsequent turns. An invalid value is reported
+by Codex. An active turn cannot change effort after it starts.
 
 ## Available tools
 

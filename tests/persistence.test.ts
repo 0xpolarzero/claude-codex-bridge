@@ -39,10 +39,18 @@ async function until(condition: () => boolean) {
 test("a restarted bridge lists saved threads and reattaches them on message", async () => {
   const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
   const first = bridge(store);
-  const session = await first.start({ cwd: process.cwd(), prompt: "work" });
-  await first.message(session.threadId, "instant");
+  const session = await first.start({
+    cwd: process.cwd(),
+    prompt: "instant",
+    serviceTier: "fast",
+    effort: "high",
+  });
   await until(() => store.read(session.threadId)?.status === "completed");
-  expect(store.read(session.threadId)?.lastAnswer).toBeTruthy();
+  expect(store.read(session.threadId)).toMatchObject({
+    lastAnswer: expect.any(String),
+    serviceTier: "fast",
+    effort: "high",
+  });
 
   const second = bridge(store);
   const listed = second.status().sessions;
@@ -50,6 +58,8 @@ test("a restarted bridge lists saved threads and reattaches them on message", as
     expect.objectContaining({
       threadId: session.threadId,
       status: "completed",
+      serviceTier: "fast",
+      effort: "high",
       attached: false,
       ownerAlive: true,
     }),
@@ -57,8 +67,11 @@ test("a restarted bridge lists saved threads and reattaches them on message", as
   expect(second.status(session.threadId).sessions).toHaveLength(1);
   expect(() => second.status("missing")).toThrow("Unknown thread");
 
-  const resumed = await second.message(session.threadId, "again");
-  expect(resumed.threadId).toBe(session.threadId);
+  const resumed = await second.resume(session.threadId);
+  expect(resumed.serviceTier).toBe("fast");
+  expect(resumed.effort).toBe("high");
+  const continued = await second.message(session.threadId, "again");
+  expect(continued.threadId).toBe(session.threadId);
   expect(second.status(session.threadId).sessions[0].attached).toBe(true);
 });
 

@@ -12,6 +12,8 @@ export type ThreadRecord = {
   threadId: string;
   cwd: string;
   model: string;
+  serviceTier?: string | null;
+  effort?: string | null;
   status: string;
   lastTurnId: string | null;
   lastAnswer: string;
