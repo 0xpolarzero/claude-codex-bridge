@@ -130,10 +130,18 @@ test("npm package contains only the bundled executable and user documentation", 
     ),
   );
   expect(manifest.version).toBe(packed.version);
-  expect(manifest.mcpServers["codex-bridge"]).toEqual({
-    command: "npx",
-    args: ["--yes", `${packed.name}@${packed.version}`],
-  });
+  const server = manifest.mcpServers["codex-bridge"];
+  expect(server).toEqual(
+    server.command === "node"
+      ? {
+          command: "node",
+          args: [resolve(root, "dist/server.js")],
+        }
+      : {
+          command: "npx",
+          args: ["--yes", `${packed.name}@${packed.version}`],
+        },
+  );
   const marketplace = JSON.parse(
     readFileSync(resolve(root, ".claude-plugin/marketplace.json"), "utf8"),
   );

@@ -84,6 +84,22 @@ function fixture(action: (root: string, remote: string) => void) {
       mkdirSync(dirname(resolve(root, path)), { recursive: true });
       cpSync(resolve(project, path), resolve(root, path));
     }
+    const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+    const pluginPath = resolve(root, versionPaths[1]);
+    const plugin = JSON.parse(readFileSync(pluginPath, "utf8"));
+    plugin.mcpServers["codex-bridge"] = {
+      command: "npx",
+      args: ["--yes", `${pkg.name}@${pkg.version}`],
+    };
+    writeFileSync(pluginPath, JSON.stringify(plugin, null, 2));
+    const marketplacePath = resolve(root, versionPaths[2]);
+    const marketplace = JSON.parse(readFileSync(marketplacePath, "utf8"));
+    const marketplacePlugin = marketplace.plugins.find(
+      (entry: { name: string }) => entry.name === "claude-codex-bridge",
+    );
+    if (!marketplacePlugin) throw new Error("Missing marketplace plugin");
+    marketplacePlugin.version = pkg.version;
+    writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2));
     git(root, "add", ".");
     git(root, "commit", "-m", "Initial fixture");
     git(root, "remote", "add", "origin", remote);

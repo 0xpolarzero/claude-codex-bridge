@@ -37,10 +37,28 @@ function fixture(action: (root: string) => void) {
       mkdirSync(dirname(target), { recursive: true });
       cpSync(resolve(project, path), target);
     }
+    normalizePublishedPlugin(root);
     action(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+function normalizePublishedPlugin(root: string) {
+  const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+  modify(root, versionPaths[1], (plugin) => {
+    plugin.version = pkg.version;
+    plugin.mcpServers["codex-bridge"] = {
+      command: "npx",
+      args: ["--yes", `${pkg.name}@${pkg.version}`],
+    };
+  });
+  modify(root, versionPaths[2], (marketplace) => {
+    const plugin = marketplace.plugins.find(
+      (entry) => entry.name === "claude-codex-bridge",
+    );
+    if (!plugin) throw new Error("Missing marketplace plugin");
+    plugin.version = pkg.version;
+  });
 }
 function modify(
   root: string,
@@ -326,8 +344,15 @@ test("npm sees the same package identity and files used for publication", () => 
   ]);
   expect(result.exitCode).toBe(0);
   const [record] = JSON.parse(result.stdout);
-  expect(record.name).toBe(readVersions(project).packageName);
-  expect(record.version).toBe(readVersions(project).version);
+  const plugin = JSON.parse(
+    readFileSync(resolve(project, versionPaths[1]), "utf8"),
+  );
+  const versions = readVersions(
+    project,
+    plugin.mcpServers["codex-bridge"].command === "node",
+  );
+  expect(record.name).toBe(versions.packageName);
+  expect(record.version).toBe(versions.version);
 
   expect(
     record.files.map((file: { path: string }) => file.path).sort(),

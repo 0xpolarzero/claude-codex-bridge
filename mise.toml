@@ -10,7 +10,7 @@ run = ["npm ci", "codex app-server generate-ts --experimental --out .generated",
 
 [tasks.check]
 depends = ["build"]
-run = ["node scripts/release.ts verify", "rumdl check --no-config .", "npm run lint", "npm run typecheck", "npm test"]
+run = ["node scripts/release.ts verify --checkout-runtime", "rumdl check --no-config .", "npm run lint", "npm run typecheck", "npm test"]
 
 [tasks.test]
 depends = ["build"]
