@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { processAlive, TERMINAL, ThreadStore } from "./store.ts";
+import { ownerStatus, TERMINAL, ThreadStore } from "./store.ts";
 
 /**
  * `wait [--home DIR] [--timeout SECONDS] THREAD_ID...`: exit once every thread's
@@ -30,32 +30,30 @@ export async function wait(args: string[], pollMs = 2_000) {
       return 1;
     }
     for (const record of records) {
-      if (
-        record &&
-        !TERMINAL.has(record.status) &&
-        !processAlive(record.ownerPid)
-      ) {
-        store.write(
-          {
-            ...record,
-            status: "unavailable",
-            error:
-              record.error ??
-              `Bridge owner process ${record.ownerPid} is not running`,
-          },
-          record.ownerPid,
+      if (!record || TERMINAL.has(record.status)) continue;
+      const owner = ownerStatus(record);
+      if (owner === "gone") {
+        console.error(
+          `thread ${record.threadId}: owner gone (pid ${record.ownerPid}); saved state is unchanged`,
         );
+        return 3;
+      }
+      if (owner === "unknown") {
+        console.error(
+          `thread ${record.threadId}: owner status unknown; saved state is unchanged`,
+        );
+        return 4;
       }
     }
-    const refreshed = threadIds.map((id) => store.read(id));
-    if (refreshed.every((record) => record && TERMINAL.has(record.status))) {
-      for (const record of refreshed) {
+    if (records.every((record) => record && TERMINAL.has(record.status))) {
+      for (const record of records) {
         if (!record) continue;
         console.log(
           JSON.stringify({
             threadId: record.threadId,
             status: record.status,
             error: record.error ?? null,
+            errorTruncated: record.errorTruncated ?? false,
             lastAnswer: record.lastAnswer,
             answerTruncated: record.answerTruncated,
           }),

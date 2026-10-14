@@ -118,6 +118,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       reply({
         thread: { id: threadId },
         ...thread,
+        serviceTier: mode === "null-tier" ? null : thread.serviceTier,
         reasoningEffort: thread.effort,
       });
       break;
@@ -143,18 +144,20 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         thread.serviceTier = params.serviceTier;
       threads.set(params.threadId, thread);
       persistState();
+      const latestTurn = {
+        ...turn(thread.turnId, resumedStatus),
+        items: [{ type: "agentMessage", text: "saved answer" }],
+        ...(mode === "resume-error"
+          ? { error: { message: "latest returned turn error" } }
+          : {}),
+      };
       const response = {
         thread: {
           id: params.threadId,
-          turns: [
-            {
-              ...turn(thread.turnId, resumedStatus),
-              items: [{ type: "agentMessage", text: "saved answer" }],
-            },
-          ],
+          turns: [latestTurn],
         },
         ...thread,
-        serviceTier: thread.serviceTier,
+        serviceTier: mode === "null-tier" ? null : thread.serviceTier,
         reasoningEffort: thread.effort,
         initialTurnsPage:
           params.threadId === "paged"
@@ -195,16 +198,40 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         break;
       }
       thread.prompt = prompt;
-      thread.effort = params.effort ?? thread.effort;
+      thread.effort =
+        mode === "reported-effort" && params.effort
+          ? "medium"
+          : (params.effort ?? thread.effort);
       thread.serviceTier = params.serviceTier ?? thread.serviceTier;
       thread.turnId = `turn-${++sequence}`;
       persistState();
+      if (prompt === "huge-error") {
+        send({ id, error: { code: -1, message: "x".repeat(65_000) } });
+        break;
+      }
+      if (prompt === "complete-pending") {
+        finish(params.threadId, "completed", "finished before acceptance");
+        setTimeout(
+          () => reply({ turn: turn(thread.turnId, "completed") }),
+          100,
+        );
+        break;
+      }
       const initialTurn = turn(thread.turnId);
       if (prompt === "pending") {
         setTimeout(() => reply({ turn: initialTurn }), 100);
         break;
       }
       if (prompt === "late") {
+        if (params.effort) {
+          notify("thread/settings/updated", {
+            threadId: params.threadId,
+            threadSettings: {
+              effort: thread.effort,
+              serviceTier: thread.serviceTier,
+            },
+          });
+        }
         reply({ turn: initialTurn });
         setTimeout(
           () =>
@@ -224,6 +251,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         item: { type: "userMessage" },
       });
       if (prompt === "instant") finish(params.threadId);
+      if (prompt !== "complete-pending" && params.effort) {
+        notify("thread/settings/updated", {
+          threadId: params.threadId,
+          threadSettings: {
+            effort: thread.effort,
+            serviceTier: thread.serviceTier,
+          },
+        });
+      }
       if (prompt === "effort")
         finish(
           params.threadId,
