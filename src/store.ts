@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   readdirSync,
@@ -5,7 +6,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
 export type ThreadRecord = {
@@ -13,15 +14,22 @@ export type ThreadRecord = {
   cwd: string;
   model: string;
   serviceTier?: string | null;
+  requestedServiceTier?: string | null;
   effort?: string | null;
+  requestedEffort?: string | null;
   status: string;
   error?: string | null;
+  errorTruncated?: boolean;
   lastTurnId: string | null;
   lastAnswer: string;
   answerTruncated: boolean;
   ownerPid: number;
+  ownerHost?: string;
+  ownerStartId?: string;
   updatedAt: string;
 };
+
+export type OwnerStatus = "alive" | "gone" | "unknown";
 
 export const TERMINAL = new Set([
   "completed",
@@ -39,9 +47,37 @@ export function bridgeHome() {
   );
 }
 
+function processStartId(pid: number) {
+  try {
+    const value = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Only claim ownership when both host and process incarnation match. */
+export function ownerStatus(record: ThreadRecord): OwnerStatus {
+  if (
+    record.ownerHost !== hostname() ||
+    !record.ownerStartId ||
+    !Number.isInteger(record.ownerPid)
+  )
+    return "unknown";
+  const currentStartId = processStartId(record.ownerPid);
+  if (currentStartId !== undefined)
+    return currentStartId === record.ownerStartId ? "alive" : "gone";
+  return processAlive(record.ownerPid) ? "unknown" : "gone";
+}
+
 /** Thread records on disk, so state survives a restarted Claude session. */
 export class ThreadStore {
   readonly dir: string;
+  private readonly ownerHost = hostname();
+  private readonly ownerStartId = processStartId(process.pid);
 
   constructor(readonly home = bridgeHome()) {
     this.dir = join(home, "threads");
@@ -53,12 +89,16 @@ export class ThreadStore {
   }
 
   write(
-    record: Omit<ThreadRecord, "ownerPid" | "updatedAt">,
-    ownerPid = process.pid,
+    record: Omit<
+      ThreadRecord,
+      "ownerPid" | "ownerHost" | "ownerStartId" | "updatedAt"
+    >,
   ) {
     const full: ThreadRecord = {
       ...record,
-      ownerPid,
+      ownerPid: process.pid,
+      ownerHost: this.ownerHost,
+      ownerStartId: this.ownerStartId,
       updatedAt: new Date().toISOString(),
     };
     const target = this.path(record.threadId);

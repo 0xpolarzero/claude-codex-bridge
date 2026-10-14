@@ -5,7 +5,9 @@ import type { ServerRequest } from "../.generated/ServerRequest.ts";
 import type { ThreadResumeResponse } from "../.generated/v2/ThreadResumeResponse.ts";
 import type { ToolRequestUserInputParams } from "../.generated/v2/ToolRequestUserInputParams.ts";
 import type { AppServer } from "./app-server.ts";
-import { processAlive, type ThreadStore } from "./store.ts";
+import { ownerStatus, TERMINAL, type ThreadStore } from "./store.ts";
+
+const MAX_ERROR_LENGTH = 64_000;
 
 export type BridgeEvent = {
   sequence: number;
@@ -21,8 +23,11 @@ type Session = {
   model: string;
   cwd: string;
   serviceTier: string | null;
+  requestedServiceTier: string | null;
   effort: string | null;
+  requestedEffort: string | null;
   error: string | null;
+  errorTruncated: boolean;
   status:
     | "idle"
     | "running"
@@ -45,6 +50,7 @@ export class Bridge {
     ServerRequest & { method: "item/tool/requestUserInput" }
   >();
   private busy = new Set<string>();
+  private pendingAcceptances = new Set<string>();
   private reattachments = new Map<string, Promise<Session>>();
   private journal: BridgeEvent[] = [];
   private sequence = 0;
@@ -67,12 +73,13 @@ export class Bridge {
     rpc.onNotification = (event) => this.notification(event);
     rpc.onRequest = (request) => this.request(request);
     rpc.onFailure = (error) => {
+      if (this.closed) return;
       this.failure = error.message;
       this.requests.clear();
       for (const session of this.sessions.values()) {
         this.flush(session.threadId);
         session.status = "unavailable";
-        session.error = error.message;
+        this.setError(session, error.message);
         session.turnId = null;
         session.questions = [];
         this.persist(session);
@@ -109,8 +116,10 @@ export class Bridge {
       result.thread.id,
       result.model,
       result.cwd,
-      result.serviceTier ?? input.serviceTier ?? null,
+      result.serviceTier,
       result.reasoningEffort,
+      input.serviceTier ?? null,
+      input.effort ?? null,
     );
     return this.control(session.threadId, async (session) => {
       await this.begin(session, input.prompt, input.effort);
@@ -142,7 +151,8 @@ export class Bridge {
     try {
       result = await this.rpc.call("thread/resume", {
         threadId,
-        serviceTier: saved?.serviceTier,
+        serviceTier:
+          saved?.requestedServiceTier ?? saved?.serviceTier ?? undefined,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         initialTurnsPage: {
@@ -152,8 +162,14 @@ export class Bridge {
         },
       });
     } catch (error) {
-      const owner = this.store?.read(threadId)?.ownerPid;
-      if (owner && owner !== process.pid && processAlive(owner))
+      const ownerRecord = this.store?.read(threadId);
+      const owner = ownerRecord?.ownerPid;
+      if (
+        owner &&
+        owner !== process.pid &&
+        ownerRecord &&
+        ownerStatus(ownerRecord) === "alive"
+      )
         throw new Error(
           `${error instanceof Error ? error.message : String(error)}; the thread belongs to another live bridge (pid ${owner}, usually an earlier Claude session). Read its saved result with codex_status, or wait for it with the waitCommand.`,
         );
@@ -163,15 +179,22 @@ export class Bridge {
       result.thread.id,
       result.model,
       result.cwd,
-      result.serviceTier ?? saved?.serviceTier ?? null,
-      result.reasoningEffort ?? saved?.effort ?? null,
+      result.serviceTier,
+      result.reasoningEffort,
+      saved?.requestedServiceTier ?? saved?.serviceTier ?? null,
+      saved?.requestedEffort ?? saved?.effort ?? null,
     );
-    session.error = saved?.error ?? null;
     const turn = result.initialTurnsPage?.data[0] ?? result.thread.turns.at(-1);
     if (turn) {
       session.lastTurnId = turn.id;
       session.turnId = turn.status === "inProgress" ? turn.id : null;
       session.status = turn.status === "inProgress" ? "running" : turn.status;
+      const sameTurn = turn.id === saved?.lastTurnId;
+      this.setError(
+        session,
+        turn.error?.message ?? (sameTurn ? (saved?.error ?? null) : null),
+        !turn.error?.message && sameTurn && saved?.errorTruncated === true,
+      );
     }
     for (const item of turn?.items ?? []) {
       if (item.type === "agentMessage") this.answerText(session, item.text);
@@ -243,17 +266,25 @@ export class Bridge {
     );
     const saved = (this.store?.list() ?? [])
       .filter((record) => !this.sessions.has(record.threadId))
-      .map((record) => ({
-        ...record,
-        serviceTier: record.serviceTier ?? null,
-        effort: record.effort ?? null,
-        error: record.error ?? null,
-        status: record.status as Session["status"],
-        turnId: null,
-        questions: [],
-        attached: false,
-        ownerAlive: processAlive(record.ownerPid),
-      }));
+      .map((record) => {
+        const ownerState = ownerStatus(record);
+        return {
+          ...record,
+          serviceTier: record.serviceTier ?? null,
+          requestedServiceTier:
+            record.requestedServiceTier ?? record.serviceTier ?? null,
+          effort: record.effort ?? null,
+          requestedEffort: record.requestedEffort ?? record.effort ?? null,
+          error: record.error ?? null,
+          errorTruncated: record.errorTruncated ?? false,
+          status: record.status as Session["status"],
+          turnId: null,
+          questions: [],
+          attached: false,
+          ownerState,
+          ownerAlive: ownerState === "alive",
+        };
+      });
     let sessions: (Session & { attached: boolean })[] = [...live, ...saved];
     if (threadId) {
       sessions = sessions.filter((session) => session.threadId === threadId);
@@ -285,14 +316,19 @@ export class Bridge {
     cwd: string,
     serviceTier: string | null = null,
     effort: string | null = null,
+    requestedServiceTier: string | null = null,
+    requestedEffort: string | null = null,
   ) {
     const session: Session = {
       threadId,
       model,
       cwd,
       serviceTier,
+      requestedServiceTier,
       effort,
+      requestedEffort,
       error: null,
+      errorTruncated: false,
       status: "idle",
       turnId: null,
       lastTurnId: null,
@@ -317,8 +353,11 @@ export class Bridge {
       cwd: session.cwd,
       model: session.model,
       serviceTier: session.serviceTier,
+      requestedServiceTier: session.requestedServiceTier,
       effort: session.effort,
+      requestedEffort: session.requestedEffort,
       error: session.error,
+      errorTruncated: session.errorTruncated,
       status: session.status,
       lastTurnId: session.lastTurnId,
       lastAnswer: session.lastAnswer,
@@ -359,8 +398,11 @@ export class Bridge {
   private async begin(session: Session, text: string, effort?: string) {
     session.lastAnswer = "";
     session.answerTruncated = false;
-    session.error = null;
-    const effectiveEffort = effort ?? session.effort ?? undefined;
+    this.setError(session, null);
+    const effectiveEffort =
+      effort ?? session.requestedEffort ?? session.effort ?? undefined;
+    if (effort !== undefined) session.requestedEffort = effort;
+    this.pendingAcceptances.add(session.threadId);
     try {
       // turn/started may arrive before this response; notifications own the live state.
       const result = await this.rpc.call("turn/start", {
@@ -369,7 +411,8 @@ export class Bridge {
         effort: effectiveEffort,
         serviceTier: session.serviceTier ?? undefined,
       });
-      if (effectiveEffort !== undefined) session.effort = effectiveEffort;
+      if (this.closed)
+        throw new Error("Bridge closed before turn acceptance was recorded");
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;
         session.turnId =
@@ -381,11 +424,16 @@ export class Bridge {
     } catch (error) {
       if (!this.closed) {
         if (session.status !== "unavailable") session.status = "failed";
-        session.error = error instanceof Error ? error.message : String(error);
+        this.setError(
+          session,
+          error instanceof Error ? error.message : String(error),
+        );
         this.persist(session);
-        this.emit(session.threadId, "error", session.error);
+        this.emit(session.threadId, "error", session.error ?? "");
       }
       throw error;
+    } finally {
+      this.pendingAcceptances.delete(session.threadId);
     }
   }
 
@@ -399,7 +447,7 @@ export class Bridge {
         session.lastTurnId = event.params.turn.id;
         session.turnId = event.params.turn.id;
         session.status = "running";
-        session.error = null;
+        this.setError(session, null);
         this.persist(session);
         this.emit(
           session.threadId,
@@ -442,7 +490,7 @@ export class Bridge {
           event.params.turn.status === "inProgress"
             ? "running"
             : event.params.turn.status;
-        session.error = event.params.turn.error?.message ?? null;
+        this.setError(session, event.params.turn.error?.message ?? null);
         session.turnId = null;
         for (const question of [...session.questions])
           this.clearRequest(question.requestId);
@@ -457,8 +505,13 @@ export class Bridge {
       case "serverRequest/resolved":
         this.clearRequest(String(event.params.requestId));
         break;
+      case "thread/settings/updated":
+        session.effort = event.params.threadSettings.effort;
+        session.serviceTier = event.params.threadSettings.serviceTier;
+        this.persist(session);
+        break;
       case "error":
-        session.error = event.params.error.message;
+        this.setError(session, event.params.error.message);
         this.persist(session);
         this.emit(session.threadId, "error", event.params.error.message);
         break;
@@ -506,6 +559,16 @@ export class Bridge {
   private answerText(session: Session, text: string) {
     session.lastAnswer = text.slice(0, 64_000);
     session.answerTruncated = text.length > 64_000;
+  }
+
+  private setError(
+    session: Session,
+    message: string | null,
+    truncated = false,
+  ) {
+    session.error = message?.slice(0, MAX_ERROR_LENGTH) ?? null;
+    session.errorTruncated =
+      truncated || (message !== null && message.length > MAX_ERROR_LENGTH);
   }
 
   private buffer(threadId: string, text: string) {
@@ -559,18 +622,20 @@ export class Bridge {
     this.closed = true;
     this.requests.clear();
     for (const session of this.sessions.values()) {
+      if (TERMINAL.has(session.status) && session.status !== "idle") continue;
       if (
         !this.busy.has(session.threadId) &&
+        !this.pendingAcceptances.has(session.threadId) &&
         session.status !== "running" &&
         session.status !== "waiting_input"
       )
         continue;
       session.status = "interrupted";
-      session.error = "Bridge closed while the Codex turn was active";
+      this.setError(session, "Bridge closed while the Codex turn was active");
       session.turnId = null;
       session.questions = [];
       this.persist(session);
-      this.emit(session.threadId, "interrupted", session.error);
+      this.emit(session.threadId, "interrupted", session.error ?? "");
     }
     for (const threadId of this.buffers.keys()) this.flush(threadId);
     await this.rpc.close();
