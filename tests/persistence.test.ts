@@ -146,6 +146,12 @@ test("service tier status reports the server value and keeps the request separat
     readFileSync(join(store.home, "app-server-state.json"), "utf8"),
   );
   expect(
+    state.calls.find(
+      (call: { method: string }) => call.method === "thread/start",
+    ).params.serviceTier,
+  ).toBe("fast");
+  expect(state.threads[session.threadId].serviceTier).toBe("fast");
+  expect(
     state.calls.find((call: { method: string }) => call.method === "turn/start")
       .params,
   ).not.toHaveProperty("serviceTier");
@@ -182,6 +188,14 @@ test("reported effort stays effective while the requested effort remains visible
     effort: "high",
   });
   expect(session).toMatchObject({ effort: "medium", requestedEffort: "high" });
+  const state = JSON.parse(
+    readFileSync(join(store.home, "app-server-state.json"), "utf8"),
+  );
+  expect(
+    state.calls.find((call: { method: string }) => call.method === "turn/start")
+      .params.effort,
+  ).toBe("high");
+  expect(state.threads[session.threadId].effort).toBe("medium");
   await created.close();
   const resumed = await bridge(store, "reported-effort").resume(
     session.threadId,
