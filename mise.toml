@@ -1,5 +1,5 @@
 [tools]
-codex = "0.153.4"
+codex = "0.160.0"
 claude = "2.1.261"
 node = "24.20.0"
 prek = "0.4.14"

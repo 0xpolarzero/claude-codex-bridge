@@ -116,6 +116,29 @@ test("a bump updates every real project version and the exact npm command pin", 
   });
 });
 
+test("checkout validation accepts only the checkout launcher and preserves version checks", () => {
+  fixture((root) => {
+    const version = readVersions(root).version;
+    modify(root, versionPaths[1], (plugin) => {
+      plugin.mcpServers["codex-bridge"].command = "node";
+      plugin.mcpServers["codex-bridge"].args = [
+        resolve(root, "dist/server.js"),
+      ];
+    });
+    expect(() => run(["verify"], root)).toThrow("npm pin disagree");
+    expect(run(["verify", "--checkout-runtime"], root)).toBe(version);
+    expect(run(["verify", version, "--checkout-runtime"], root)).toBe(version);
+    modify(root, versionPaths[1], (plugin) => {
+      plugin.mcpServers["codex-bridge"].args = [
+        resolve(root, "elsewhere/server.js"),
+      ];
+    });
+    expect(() => run(["verify", "--checkout-runtime"], root)).toThrow(
+      "npm pin disagree",
+    );
+  });
+});
+
 for (const mutation of [
   [
     3,

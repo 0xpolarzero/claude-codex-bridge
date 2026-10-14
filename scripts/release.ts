@@ -38,7 +38,7 @@ export function nextVersion(current: string, level: string): string {
   return parts.join(".");
 }
 
-export function readVersions(root: string) {
+export function readVersions(root: string, checkoutRuntime = false) {
   const contents = versionPaths.map((path) =>
     readFileSync(resolve(root, path), "utf8"),
   );
@@ -53,6 +53,10 @@ export function readVersions(root: string) {
   if (entries.length !== 1)
     throw new Error("Expected exactly one marketplace entry for the plugin");
   const server = plugin.mcpServers["codex-bridge"];
+  const expectedCommand = checkoutRuntime ? "node" : "npx";
+  const expectedArgs = checkoutRuntime
+    ? [resolve(root, "dist/server.js")]
+    : ["--yes", `${pkg.name}@${pkg.version}`];
   if (
     lock.version !== pkg.version ||
     lock.packages[""].version !== pkg.version ||
@@ -60,9 +64,8 @@ export function readVersions(root: string) {
     lock.packages[""].name !== pkg.name ||
     plugin.version !== pkg.version ||
     entries[0].version !== pkg.version ||
-    server.command !== "npx" ||
-    JSON.stringify(server.args) !==
-      JSON.stringify(["--yes", `${pkg.name}@${pkg.version}`])
+    server.command !== expectedCommand ||
+    JSON.stringify(server.args) !== JSON.stringify(expectedArgs)
   )
     throw new Error(
       "Project versions or the plugin's npm pin disagree; refusing a partial release",
@@ -107,15 +110,20 @@ export function run(args: string[], root: string): string {
     return releaseLevel(JSON.parse(argument ?? "[]")) ?? "";
   if (command === "bump") return bumpVersion(root, argument);
   if (command === "verify") {
-    const { version } = readVersions(root);
-    if (argument !== undefined && argument !== version)
+    const checkoutRuntime = args.includes("--checkout-runtime");
+    const versions = args.filter((value) => value !== "--checkout-runtime");
+    if (versions.length > 2)
+      throw new Error("Usage: release.ts verify [X.Y.Z] [--checkout-runtime]");
+    const expectedVersion = versions[1];
+    const { version } = readVersions(root, checkoutRuntime);
+    if (expectedVersion !== undefined && expectedVersion !== version)
       throw new Error(
-        `Tag ${argument} does not match project version ${version}`,
+        `Tag ${expectedVersion} does not match project version ${version}`,
       );
     return version;
   }
   throw new Error(
-    "Usage: release.ts level '<labels JSON>' | bump patch|minor|major | verify [X.Y.Z]",
+    "Usage: release.ts level '<labels JSON>' | bump patch|minor|major | verify [X.Y.Z] [--checkout-runtime]",
   );
 }
 

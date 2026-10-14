@@ -162,6 +162,12 @@ from Codex CLI 0.160.0's `codex app-server generate-ts` output; the generated
 effort applies to that turn and subsequent turns. An invalid value is reported
 by Codex. An active turn cannot change effort after it starts.
 
+When reattaching a saved thread, the bridge sends its saved service tier on
+`thread/resume` and on subsequent `turn/start` requests. It sends saved reasoning
+effort on the next `turn/start`, so the persisted setting reaches the model
+request after a bridge restart. These fields are defined by the generated
+`ThreadResumeParams` and `TurnStartParams` from Codex CLI 0.160.0.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |

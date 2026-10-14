@@ -7,7 +7,7 @@ import { afterEach, expect, test } from "vitest";
 import { z } from "zod";
 import { AppServer } from "../src/app-server.ts";
 import { main } from "../src/index.ts";
-import { createServer } from "../src/server.ts";
+import { buildWaitCommand, createServer } from "../src/server.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -25,6 +25,18 @@ test("stdio EOF closes the Codex child and shutdown is idempotent", async () => 
   await shutdown();
   await shutdown();
   await expect(rpc.call("model/list", {})).rejects.toThrow("closed");
+});
+
+test("wait commands single-quote shell paths and thread IDs", () => {
+  expect(
+    buildWaitCommand(
+      "/tmp/a b/$HOME/it's `server`.js",
+      "/tmp/data $HOME/it's `state`",
+      "thread $HOME `command`'id",
+    ),
+  ).toBe(
+    "node '/tmp/a b/$HOME/it'\\''s `server`.js' wait --home '/tmp/data $HOME/it'\\''s `state`' 'thread $HOME `command`'\\''id'",
+  );
 });
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
