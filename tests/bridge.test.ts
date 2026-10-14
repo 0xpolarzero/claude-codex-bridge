@@ -74,6 +74,35 @@ test("a turn that completes before its start response stays completed", async ()
   expect(session.lastAnswer).toBe("finished");
 });
 
+test("reasoning effort reaches turn/start for the first and next turns", async () => {
+  const { bridge } = fixture();
+  const session = await bridge.start({
+    cwd,
+    prompt: "effort",
+    effort: "high",
+  });
+  expect(session.lastAnswer).toBe("effort=high");
+
+  const next = await bridge.message(session.threadId, "effort", "xhigh");
+  expect(next.mode).toBe("new_turn");
+  expect(next.lastAnswer).toBe("effort=xhigh");
+});
+
+test("app-server reasoning effort errors remain visible", async () => {
+  const { bridge } = fixture();
+  await expect(
+    bridge.start({ cwd, prompt: "work", effort: "missing" }),
+  ).rejects.toThrow("reasoning effort unavailable");
+});
+
+test("effort cannot be changed while steering an active turn", async () => {
+  const { bridge } = fixture();
+  const session = await bridge.start({ cwd, prompt: "work" });
+  await expect(
+    bridge.message(session.threadId, "new direction", "high"),
+  ).rejects.toThrow("turn/steer cannot change the active turn's effort");
+});
+
 test("start response establishes a running turn before the started notification arrives", async () => {
   const { bridge, events } = fixture();
   const session = await bridge.start({ cwd, prompt: "late" });

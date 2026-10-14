@@ -152,6 +152,13 @@ Keep the `threadId` if you want to continue after restarting Claude:
 Claude can list available models with `codex_models`. An explicitly selected
 model is requested without provider fallback.
 
+Pass `effort` to `codex_start` to choose the first turn's reasoning effort, or
+to `codex_message` when the thread is idle to choose the next turn's effort.
+The bridge sends it as `effort` on `turn/start`; the app-server protocol does
+not accept it on `thread/start` or `turn/steer`. The requested effort applies
+to that turn and subsequent turns. An invalid value is reported by Codex. An
+active turn cannot change effort after it starts.
+
 ## Available tools
 
 | Tool | What you can ask Claude to do |

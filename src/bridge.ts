@@ -77,7 +77,12 @@ export class Bridge {
     return this.rpc.call("model/list", { cursor, limit: 100 });
   }
 
-  async start(input: { prompt: string; cwd: string; model?: string }) {
+  async start(input: {
+    prompt: string;
+    cwd: string;
+    model?: string;
+    effort?: string;
+  }) {
     if (!isAbsolute(input.cwd) || !(await stat(input.cwd)).isDirectory()) {
       throw new Error("cwd must be an existing absolute directory");
     }
@@ -91,7 +96,7 @@ export class Bridge {
     });
     const session = this.attach(result.thread.id, result.model, result.cwd);
     return this.lock(session, async () => {
-      await this.begin(session, input.prompt);
+      await this.begin(session, input.prompt, input.effort);
       return this.snapshot(session);
     });
   }
@@ -119,10 +124,14 @@ export class Bridge {
     return this.snapshot(session);
   }
 
-  async message(threadId: string, message: string) {
+  async message(threadId: string, message: string, effort?: string) {
     const session = this.session(threadId);
     return this.lock(session, async () => {
       if (session.turnId) {
+        if (effort !== undefined)
+          throw new Error(
+            "effort can only be set when starting a new turn; turn/steer cannot change the active turn's effort",
+          );
         await this.rpc.call("turn/steer", {
           threadId,
           expectedTurnId: session.turnId,
@@ -130,7 +139,7 @@ export class Bridge {
         });
         return { mode: "steered", ...this.snapshot(session) };
       }
-      await this.begin(session, message);
+      await this.begin(session, message, effort);
       return { mode: "new_turn", ...this.snapshot(session) };
     });
   }
@@ -236,7 +245,7 @@ export class Bridge {
     }
   }
 
-  private async begin(session: Session, text: string) {
+  private async begin(session: Session, text: string, effort?: string) {
     session.lastAnswer = "";
     session.answerTruncated = false;
     try {
@@ -244,6 +253,7 @@ export class Bridge {
       const result = await this.rpc.call("turn/start", {
         threadId: session.threadId,
         input: [{ type: "text", text, text_elements: [] }],
+        effort,
       });
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;

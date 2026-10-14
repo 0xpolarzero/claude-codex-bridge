@@ -4,7 +4,13 @@ const mode = process.argv[2];
 if (mode === "stubborn") process.on("SIGTERM", () => {});
 const threads = new Map<
   string,
-  { model: string; cwd: string; turnId: string; prompt: string }
+  {
+    model: string;
+    cwd: string;
+    turnId: string;
+    prompt: string;
+    effort?: string;
+  }
 >();
 let sequence = 0;
 const send = (message: object) =>
@@ -61,6 +67,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case "thread/start": {
       if (params.model === "missing") {
         send({ id, error: { code: -1, message: "model unavailable" } });
+        break;
+      }
+      if (params.effort === "missing") {
+        send({
+          id,
+          error: { code: -1, message: "reasoning effort unavailable" },
+        });
         break;
       }
       if (
@@ -130,11 +143,19 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       if (prompt === "crash") {
         process.exit(7);
       }
+      if (params.effort === "missing") {
+        send({
+          id,
+          error: { code: -1, message: "reasoning effort unavailable" },
+        });
+        break;
+      }
       if (prompt === "malformed") {
         process.stdout.write("bad\n");
         break;
       }
       thread.prompt = prompt;
+      thread.effort = params.effort ?? thread.effort;
       thread.turnId = `turn-${++sequence}`;
       const initialTurn = turn(thread.turnId);
       if (prompt === "late") {
@@ -157,6 +178,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         item: { type: "userMessage" },
       });
       if (prompt === "instant") finish(params.threadId);
+      if (prompt === "effort")
+        finish(
+          params.threadId,
+          "completed",
+          `effort=${thread.effort ?? "default"}`,
+        );
       if (prompt === "failed") {
         notify("error", {
           threadId: params.threadId,
