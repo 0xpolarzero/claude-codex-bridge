@@ -29,6 +29,7 @@ export async function wait(args: string[], pollMs = 2_000) {
       console.error(`unknown thread: ${missing.join(", ")}`);
       return 1;
     }
+    const unknownOwners: string[] = [];
     for (const record of records) {
       if (!record || TERMINAL.has(record.status)) continue;
       const owner = ownerStatus(record);
@@ -39,10 +40,7 @@ export async function wait(args: string[], pollMs = 2_000) {
         return 3;
       }
       if (owner === "unknown") {
-        console.error(
-          `thread ${record.threadId}: owner status unknown; saved state is unchanged`,
-        );
-        return 4;
+        unknownOwners.push(record.threadId);
       }
     }
     if (records.every((record) => record && TERMINAL.has(record.status))) {
@@ -62,7 +60,12 @@ export async function wait(args: string[], pollMs = 2_000) {
       return 0;
     }
     if (Date.now() >= deadline) {
-      console.error(`timed out after ${timeoutSeconds}s; still running`);
+      const unknown = unknownOwners.length
+        ? `; owner status unknown for ${unknownOwners.join(", ")}`
+        : "";
+      console.error(
+        `timed out after ${timeoutSeconds}s; still running${unknown}`,
+      );
       return 2;
     }
     await sleep(pollMs);
