@@ -50,7 +50,7 @@ export class Bridge {
     ServerRequest & { method: "item/tool/requestUserInput" }
   >();
   private busy = new Set<string>();
-  private pendingAcceptances = new Set<string>();
+  private pendingAcceptances = new Map<string, string | null>();
   private reattachments = new Map<string, Promise<Session>>();
   private journal: BridgeEvent[] = [];
   private sequence = 0;
@@ -190,10 +190,14 @@ export class Bridge {
       session.turnId = turn.status === "inProgress" ? turn.id : null;
       session.status = turn.status === "inProgress" ? "running" : turn.status;
       const sameTurn = turn.id === saved?.lastTurnId;
+      const keepSavedError =
+        sameTurn && ["failed", "interrupted"].includes(turn.status);
       this.setError(
         session,
-        turn.error?.message ?? (sameTurn ? (saved?.error ?? null) : null),
-        !turn.error?.message && sameTurn && saved?.errorTruncated === true,
+        turn.error?.message ?? (keepSavedError ? (saved?.error ?? null) : null),
+        !turn.error?.message &&
+          keepSavedError &&
+          saved?.errorTruncated === true,
       );
     }
     for (const item of turn?.items ?? []) {
@@ -401,18 +405,19 @@ export class Bridge {
     this.setError(session, null);
     const effectiveEffort =
       effort ?? session.requestedEffort ?? session.effort ?? undefined;
-    if (effort !== undefined) session.requestedEffort = effort;
-    this.pendingAcceptances.add(session.threadId);
+    this.pendingAcceptances.set(session.threadId, session.lastTurnId);
     try {
       // turn/started may arrive before this response; notifications own the live state.
       const result = await this.rpc.call("turn/start", {
         threadId: session.threadId,
         input: [{ type: "text", text, text_elements: [] }],
         effort: effectiveEffort,
-        serviceTier: session.serviceTier ?? undefined,
+        serviceTier:
+          session.requestedServiceTier ?? session.serviceTier ?? undefined,
       });
       if (this.closed)
         throw new Error("Bridge closed before turn acceptance was recorded");
+      if (effort !== undefined) session.requestedEffort = effort;
       if (session.lastTurnId !== result.turn.id) {
         session.lastTurnId = result.turn.id;
         session.turnId =
@@ -622,10 +627,17 @@ export class Bridge {
     this.closed = true;
     this.requests.clear();
     for (const session of this.sessions.values()) {
-      if (TERMINAL.has(session.status) && session.status !== "idle") continue;
+      const pendingTurn = this.pendingAcceptances.get(session.threadId);
+      const pendingAcceptance = this.pendingAcceptances.has(session.threadId);
+      if (
+        TERMINAL.has(session.status) &&
+        session.status !== "idle" &&
+        (!pendingAcceptance || session.lastTurnId !== pendingTurn)
+      )
+        continue;
       if (
         !this.busy.has(session.threadId) &&
-        !this.pendingAcceptances.has(session.threadId) &&
+        !pendingAcceptance &&
         session.status !== "running" &&
         session.status !== "waiting_input"
       )

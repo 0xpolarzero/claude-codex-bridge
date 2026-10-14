@@ -135,11 +135,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         effort: null,
         serviceTier: null,
       };
-      const resumedStatus = thread.turnId
-        ? persisted
-          ? "interrupted"
-          : "inProgress"
-        : "completed";
+      const resumedStatus =
+        mode === "resume-completed"
+          ? "completed"
+          : mode === "resume-in-progress"
+            ? "inProgress"
+            : thread.turnId
+              ? persisted
+                ? "interrupted"
+                : "inProgress"
+              : "completed";
       if (params.serviceTier !== undefined)
         thread.serviceTier = params.serviceTier;
       threads.set(params.threadId, thread);

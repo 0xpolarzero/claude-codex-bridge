@@ -5,7 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, test, vi } from "vitest";
 import { AppServer } from "../src/app-server.ts";
 import { Bridge } from "../src/bridge.ts";
-import { ThreadStore } from "../src/store.ts";
+import { ownerStatus, ThreadStore } from "../src/store.ts";
 import { wait } from "../src/wait.ts";
 
 const command = [
@@ -154,7 +154,7 @@ test("service tier status reports the server value and keeps the request separat
   expect(
     state.calls.find((call: { method: string }) => call.method === "turn/start")
       .params,
-  ).not.toHaveProperty("serviceTier");
+  ).toMatchObject({ serviceTier: "fast" });
   await first.close();
 
   const second = bridge(store, "null-tier");
@@ -176,7 +176,31 @@ test("service tier status reports the server value and keeps the request separat
     state.calls
       .filter((call: { method: string }) => call.method === "turn/start")
       .at(-1).params,
-  ).not.toHaveProperty("serviceTier");
+  ).toMatchObject({ serviceTier: "fast" });
+});
+
+test("a rejected effort override does not replace the accepted preference", async () => {
+  const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+  const created = bridge(store);
+  const session = await created.start({
+    cwd: process.cwd(),
+    prompt: "effort",
+    effort: "high",
+  });
+  await expect(
+    created.message(session.threadId, "work", "missing"),
+  ).rejects.toThrow("reasoning effort unavailable");
+  await created.message(session.threadId, "effort");
+
+  const state = JSON.parse(
+    readFileSync(join(store.home, "app-server-state.json"), "utf8"),
+  );
+  expect(
+    state.calls
+      .filter((call: { method: string }) => call.method === "turn/start")
+      .map((call: { params: { effort: string } }) => call.params.effort),
+  ).toEqual(["high", "missing", "high"]);
+  expect(store.read(session.threadId)?.requestedEffort).toBe("high");
 });
 
 test("reported effort stays effective while the requested effort remains visible", async () => {
@@ -237,6 +261,27 @@ test("resume drops a saved diagnostic when the returned latest turn is different
   );
   expect(sameTurn.error).toBe("latest returned turn error");
 });
+
+test.each([
+  ["resume-completed", "completed"],
+  ["resume-in-progress", "running"],
+])(
+  "resume clears a saved diagnostic when the same turn is %s",
+  async (mode, status) => {
+    const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+    const first = bridge(store, mode);
+    const session = await first.start({ cwd: process.cwd(), prompt: "late" });
+    await first.close();
+    const saved = store.read(session.threadId);
+    if (!saved) throw new Error("Missing saved session");
+    store.write({ ...saved, error: "older shutdown diagnostic" });
+
+    const resumed = await bridge(store, mode).resume(session.threadId);
+    expect(resumed.status).toBe(status);
+    expect(resumed.error).toBeNull();
+    expect(store.read(session.threadId)?.error).toBeNull();
+  },
+);
 
 test("persisted diagnostics are capped and report truncation through wait", async () => {
   const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
@@ -334,6 +379,34 @@ test("shutdown marks a turn interrupted while its acceptance response is pending
   });
 });
 
+test("shutdown interrupts a new pending acceptance after the prior turn completed", async () => {
+  const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+  const created = bridge(store);
+  const session = await created.start({
+    cwd: process.cwd(),
+    prompt: "instant",
+  });
+  expect(store.read(session.threadId)?.status).toBe("completed");
+
+  const starting = created.message(session.threadId, "pending");
+  const rejected = expect(starting).rejects.toThrow("Bridge closed");
+  const fixtureStatePath = join(store.home, "app-server-state.json");
+  await until(() => {
+    const state = JSON.parse(readFileSync(fixtureStatePath, "utf8"));
+    return (
+      state.calls.filter(
+        (call: { method: string }) => call.method === "turn/start",
+      ).length === 2
+    );
+  });
+  await created.close();
+  await rejected;
+  expect(store.read(session.threadId)).toMatchObject({
+    status: "interrupted",
+    error: expect.stringContaining("Bridge closed"),
+  });
+});
+
 test("RPC and process failures persist diagnostics for status and wait", async () => {
   const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
   const created = bridge(store);
@@ -414,6 +487,66 @@ test("wait exits once saved threads finish and prints their answers", async () =
   });
   expect(await wait(["--home", store.home], 5)).toBe(64);
   expect(error).toHaveBeenCalled();
+});
+
+test("wait keeps polling an unknown legacy owner until the thread is terminal", async () => {
+  const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+  const record = {
+    threadId: "legacy-live",
+    cwd: "/",
+    model: "m",
+    status: "running",
+    lastTurnId: "turn",
+    lastAnswer: "",
+    answerTruncated: false,
+  };
+  store.write(record);
+  const saved = store.read(record.threadId);
+  if (!saved) throw new Error("Missing saved legacy record");
+  const {
+    ownerHost: _host,
+    ownerStartId: _startId,
+    ownerIdentityVersion: _version,
+    ...legacyRecord
+  } = saved;
+  writeFileSync(store.path(record.threadId), JSON.stringify(legacyRecord));
+
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const pending = wait(["--home", store.home, record.threadId], 5);
+  await sleep(20);
+  store.write({ ...record, status: "completed", lastAnswer: "done" });
+  expect(await pending).toBe(0);
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining('"lastAnswer":"done"'),
+  );
+  expect(error).not.toHaveBeenCalled();
+});
+
+test("wait reports an unknown owner only when its timeout expires", async () => {
+  const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+  store.write({
+    threadId: "legacy-timeout",
+    cwd: "/",
+    model: "m",
+    status: "running",
+    lastTurnId: "turn",
+    lastAnswer: "",
+    answerTruncated: false,
+  });
+  const record = store.read("legacy-timeout");
+  if (!record) throw new Error("Missing saved record");
+  const { ownerHost: _host, ownerStartId: _startId, ...legacy } = record;
+  writeFileSync(store.path("legacy-timeout"), JSON.stringify(legacy));
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  expect(
+    await wait(["--home", store.home, "--timeout", "0", "legacy-timeout"], 5),
+  ).toBe(2);
+  expect(error).toHaveBeenCalledWith(
+    expect.stringContaining("owner status unknown"),
+  );
+  expect(store.read("legacy-timeout")?.status).toBe("running");
 });
 
 test("wait never overwrites a newer record when an owner disappears during its check", async () => {
@@ -514,7 +647,7 @@ test("wait treats reused, foreign, and legacy owners as gone or unknown safely",
   );
   expect(
     await wait(["--home", store.home, "--timeout", "0", "foreign"], 5),
-  ).toBe(4);
+  ).toBe(2);
   expect(store.read("foreign")?.status).toBe("running");
 
   store.write({ ...base, threadId: "legacy" });
@@ -524,9 +657,56 @@ test("wait treats reused, foreign, and legacy owners as gone or unknown safely",
   writeFileSync(store.path("legacy"), JSON.stringify(legacyRecord));
   expect(
     await wait(["--home", store.home, "--timeout", "0", "legacy"], 5),
-  ).toBe(4);
+  ).toBe(2);
   expect(store.read("legacy")?.status).toBe("running");
   expect(error).toHaveBeenCalledWith(
     expect.stringContaining("owner status unknown"),
   );
+});
+
+test("process identity stays stable when the calling locale and timezone change", () => {
+  const previousTimezone = process.env.TZ;
+  const previousLocale = process.env.LC_ALL;
+  try {
+    process.env.TZ = "UTC";
+    process.env.LC_ALL = "C";
+    const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+    store.write({
+      threadId: "stable-identity",
+      cwd: "/",
+      model: "m",
+      status: "running",
+      lastTurnId: "turn",
+      lastAnswer: "",
+      answerTruncated: false,
+    });
+    const record = store.read("stable-identity");
+    if (!record) throw new Error("Missing saved record");
+
+    process.env.TZ = "Europe/Paris";
+    process.env.LC_ALL = "fr_FR.UTF-8";
+    expect(ownerStatus(record)).toBe("alive");
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+    if (previousLocale === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = previousLocale;
+  }
+});
+
+test("unversioned process identities are unknown", () => {
+  const store = new ThreadStore(mkdtempSync(join(tmpdir(), "bridge-store-")));
+  store.write({
+    threadId: "unversioned-identity",
+    cwd: "/",
+    model: "m",
+    status: "running",
+    lastTurnId: "turn",
+    lastAnswer: "",
+    answerTruncated: false,
+  });
+  const saved = store.read("unversioned-identity");
+  if (!saved) throw new Error("Missing saved record");
+  const { ownerIdentityVersion: _version, ...unversioned } = saved;
+  expect(ownerStatus(unversioned)).toBe("unknown");
 });

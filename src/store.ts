@@ -26,6 +26,7 @@ export type ThreadRecord = {
   ownerPid: number;
   ownerHost?: string;
   ownerStartId?: string;
+  ownerIdentityVersion?: number;
   updatedAt: string;
 };
 
@@ -52,6 +53,7 @@ function processStartId(pid: number) {
     const value = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
     }).trim();
     return value || undefined;
   } catch {
@@ -63,6 +65,7 @@ function processStartId(pid: number) {
 export function ownerStatus(record: ThreadRecord): OwnerStatus {
   if (
     record.ownerHost !== hostname() ||
+    record.ownerIdentityVersion !== 1 ||
     !record.ownerStartId ||
     !Number.isInteger(record.ownerPid)
   )
@@ -99,6 +102,7 @@ export class ThreadStore {
       ownerPid: process.pid,
       ownerHost: this.ownerHost,
       ownerStartId: this.ownerStartId,
+      ownerIdentityVersion: 1,
       updatedAt: new Date().toISOString(),
     };
     const target = this.path(record.threadId);
