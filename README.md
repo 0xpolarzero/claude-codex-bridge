@@ -30,7 +30,7 @@ sequenceDiagram
 ## Requirements
 
 - **Claude Code 2.1.261**, installed and signed in.
-- **Codex CLI 0.153.4**, installed and signed in with access to the model you
+- **Codex CLI 0.160.0**, installed and signed in with access to the model you
   want to use.
 - **Node.js 24.20.0 or newer**, including npm and npx.
 
